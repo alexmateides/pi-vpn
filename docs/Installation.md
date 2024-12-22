@@ -44,6 +44,7 @@ sudo ./install-driver.sh
 ```shell
 sudo reboot
 ```
+
 ---
 
 ### III. Configure the hotspot and VPN
