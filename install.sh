@@ -33,6 +33,8 @@ echo " Stopping services & removing old config"
 echo "============================"
 systemctl stop hostapd || true
 systemctl stop dnsmasq || true
+systemctl enable dhcpcd || true
+systemctl stop dhcpcd || true
 
 # Remove old config files
 rm -f /etc/hostapd/hostapd.conf
@@ -76,6 +78,11 @@ echo "============================"
 echo " Enabling dnsmasq service"
 echo "============================"
 systemctl enable dnsmasq
+
+echo "============================"
+echo " Enabling dhcpcd service"
+echo "============================"
+systemctl enable dhcpcd
 
 echo "============================"
 echo " Creating new hostapd.conf"
