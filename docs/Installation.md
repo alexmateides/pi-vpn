@@ -48,3 +48,11 @@ sudo reboot
 
 ### III. Configure the hotspot and VPN
 
+#### 1. Clone the repo
+
+```shell
+cd ~
+git clone https://github.com/alexmateides/pi-vpn
+cd ~/pi-vpn
+sudo ./install.sh
+```
