@@ -1,133 +1,153 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# setup_hotspot.sh
+#
+# This script configures Raspberry Pi OS (Lite 64-bit) to use wlan0 as the main
+# internet interface, and wlan1 as a Wi-Fi hotspot with SSID/password=bambusak
+# on subnet 20.10.0.1/24.
+#
+# It removes old config files for hostapd, dnsmasq, etc. and replaces them.
 
-echo "Starting Hotspot and NordVPN setup..."
+set -e
 
-# Check for root permissions
-if [ "$(id -u)" != "0" ]; then
-    echo "This script must be run as root." >&2
-    exit 1
+# Must be root to run.
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Please run this script with sudo or as root!"
+  exit 1
 fi
 
-# Update system and install necessary packages
-echo "Updating system and installing required packages..."
-apt update && apt upgrade -y
-apt install -y hostapd dnsmasq iptables openvpn curl
+echo "============================"
+echo " Updating and installing packages"
+echo "============================"
+apt-get update
+# iptables-persistent might prompt for saving existing rules — we auto-confirm
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    iptables \
+    iptables-persistent \
+    dnsmasq \
+    hostapd \
+    dhcpcd5
 
-# Prompt user for Hotspot configuration
-read -p "Enter the Hotspot SSID (network name): " HOTSPOT_SSID
-read -p "Enter the Hotspot Password: " HOTSPOT_PASSWORD
+echo "============================"
+echo " Stopping services & removing old config"
+echo "============================"
+systemctl stop hostapd || true
+systemctl stop dnsmasq || true
 
-# Configure hostapd
-echo "Configuring hostapd..."
-cat > /etc/hostapd/hostapd.conf <<EOL
+# Remove old config files
+rm -f /etc/hostapd/hostapd.conf
+rm -f /etc/dnsmasq.conf
+
+# Overwrite dhcpcd.conf
+# (If you have other interfaces or custom config, add them here as needed)
+cat <<EOF >/etc/dhcpcd.conf
+# /etc/dhcpcd.conf
+# Default dhcpcd configuration overwritten by setup_hotspot.sh
+
+# Example fallback to static profile on eth0 (uncomment if needed)
+#interface eth0
+#static ip_address=192.168.1.10/24
+#static routers=192.168.1.1
+static domain_name_servers=8.8.4.4 8.8.8.8
+
+# Let wlan0 be handled by dhcp (typical)
+interface wlan0
+  # no static ip here, obtains IP from your router
+
+# Custom static IP for wlan1
+interface wlan1
+static ip_address=20.10.0.1/24
+EOF
+
+echo "============================"
+echo " Creating new dnsmasq.conf"
+echo "============================"
+cat <<EOF >/etc/dnsmasq.conf
+# /etc/dnsmasq.conf
+# Dnsmasq config for hotspot on wlan1
+
+interface=wlan1
+bind-interfaces
+dhcp-range=20.10.0.10,20.10.0.200,255.255.255.0,24h
+dhcp-option=option:dns-server,8.8.8.8,8.8.4.4
+EOF
+
+echo "============================"
+echo " Enabling dnsmasq service"
+echo "============================"
+systemctl enable dnsmasq
+
+echo "============================"
+echo " Creating new hostapd.conf"
+echo "============================"
+cat <<EOF >/etc/hostapd/hostapd.conf
+# /etc/hostapd/hostapd.conf
+# Hotspot SSID: bambusak / Password: bambusak
+
 interface=wlan1
 driver=nl80211
-ssid=${HOTSPOT_SSID}
+ssid=bambusak
 hw_mode=g
 channel=7
 wmm_enabled=1
+ieee80211n=1
+ieee80211d=1
+country_code=US
+ht_capab=[HT40][SHORT-GI-20][SHORT-GI-40]
 auth_algs=1
 wpa=2
-wpa_passphrase=${HOTSPOT_PASSWORD}
 wpa_key_mgmt=WPA-PSK
+wpa_passphrase=bambusak
 rsn_pairwise=CCMP
-EOL
+EOF
 
-sed -i 's|#DAEMON_CONF="".*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+echo "============================"
+echo " Pointing hostapd to its config"
+echo "============================"
+cat <<EOF >/etc/default/hostapd
+# /etc/default/hostapd
+DAEMON_CONF="/etc/hostapd/hostapd.conf"
+EOF
 
-# Configure dnsmasq
-echo "Configuring dnsmasq..."
-mv /etc/dnsmasq.conf /etc/dnsmasq.conf.orig
-cat > /etc/dnsmasq.conf <<EOL
-interface=wlan1
-dhcp-range=192.168.4.2,192.168.4.20,255.255.255.0,24h
-server=8.8.8.8
-EOL
-
-# Configure static IP for wlan1
-echo "Configuring static IP for wlan1..."
-cat >> /etc/dhcpcd.conf <<EOL
-interface wlan1
-static ip_address=192.168.4.1/24
-nohook wpa_supplicant
-EOL
-systemctl restart dhcpcd
-
-# Enable IP forwarding
-echo "Enabling IP forwarding..."
-sysctl -w net.ipv4.ip_forward=1
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-
-# Set up NAT
-echo "Setting up NAT for internet sharing..."
-iptables -t nat -A POSTROUTING -o wlan0 -j MASQUERADE
-iptables -A FORWARD -i wlan1 -o wlan0 -j ACCEPT
-iptables -A FORWARD -i wlan0 -o wlan1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-sh -c "iptables-save > /etc/iptables.ipv4.nat"
-cat >> /etc/rc.local <<EOL
-iptables-restore < /etc/iptables.ipv4.nat
-EOL
-
-# NordVPN installation and setup
-echo "Installing NordVPN client..."
-wget -qnc https://downloads.nordcdn.com/apps/linux/install.sh
-sh install.sh
-
-echo "Configuring NordVPN..."
-read -p "Enter your NordVPN username: " NORDVPN_USER
-read -s -p "Enter your NordVPN password: " NORDVPN_PASS
-echo
-
-# Save NordVPN credentials for OpenVPN
-echo "Saving NordVPN credentials..."
-cat > /etc/openvpn/nordvpn_credentials <<EOL
-${NORDVPN_USER}
-${NORDVPN_PASS}
-EOL
-chmod 600 /etc/openvpn/nordvpn_credentials
-
-# Set up OpenVPN configuration
-echo "Setting up OpenVPN with NordVPN..."
-read -p "Enter the NordVPN server you want to use (e.g., us123.nordvpn.com): " NORDVPN_SERVER
-
-cat > /etc/openvpn/client.conf <<EOL
-client
-dev tun
-proto udp
-remote ${NORDVPN_SERVER} 1194
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-auth-user-pass /etc/openvpn/nordvpn_credentials
-remote-cert-tls server
-cipher AES-256-CBC
-comp-lzo
-verb 3
-EOL
-
-# Start OpenVPN service
-echo "Starting OpenVPN service..."
-systemctl enable openvpn
-systemctl start openvpn
-
-# Route all hotspot traffic through VPN
-echo "Routing hotspot traffic through NordVPN..."
-iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE
-iptables -A FORWARD -i wlan1 -o tun0 -j ACCEPT
-iptables -A FORWARD -i tun0 -o wlan1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-sh -c "iptables-save > /etc/iptables.ipv4.nat"
-
-# Enable and start services at boot
-echo "Enabling services to start at boot..."
+echo "============================"
+echo " Unmasking & Enabling hostapd"
+echo "============================"
+systemctl unmask hostapd
 systemctl enable hostapd
-systemctl enable dnsmasq
-systemctl enable openvpn
 
-# Start the services
-echo "Starting services..."
-systemctl start hostapd
-systemctl start dnsmasq
-systemctl restart openvpn
+echo "============================"
+echo " Enabling IP forwarding in /etc/sysctl.conf"
+echo "============================"
+# Ensure net.ipv4.ip_forward=1 is in /etc/sysctl.conf
+sed -i 's/.*net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
+if ! grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf; then
+  echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+fi
+sysctl -p
 
-echo "Setup complete! Your hotspot (${HOTSPOT_SSID}) is now running behind NordVPN."
+echo "============================"
+echo " Setting up iptables NAT (MASQUERADE on wlan0)"
+echo "============================"
+# Flush existing NAT rules to be sure
+iptables -t nat -F
+# Add MASQUERADE rule for outbound on wlan0
+iptables -t nat -A POSTROUTING -o wlan0 -j MASQUERADE
+
+echo "============================"
+echo " Saving iptables rules persistently"
+echo "============================"
+netfilter-persistent save
+netfilter-persistent reload
+
+echo "============================"
+echo " Restarting services to apply changes"
+echo "============================"
+systemctl restart dhcpcd
+systemctl restart dnsmasq
+systemctl restart hostapd
+
+echo "============================"
+echo " Setup complete. Rebooting now..."
+echo "============================"
+sleep 3
+reboot
