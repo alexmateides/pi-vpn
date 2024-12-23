@@ -99,7 +99,7 @@ channel=7
 wmm_enabled=1
 ieee80211n=1
 ieee80211d=1
-country_code=US
+country_code=CZ
 ht_capab=[HT40][SHORT-GI-20][SHORT-GI-40]
 auth_algs=1
 wpa=2
@@ -147,8 +147,34 @@ netfilter-persistent save
 netfilter-persistent reload
 
 echo "============================"
+echo " Creating hotspot.service"
+echo "============================"
+cat <<EOF >/etc/system/systemd/hotspot.service
+# /etc/system/systemd/hotspot.service
+[Unit]
+Description=Restart hostapd after dependencies are up
+After=network.target dnsmasq.service dhcpcd.service
+Requires=dnsmasq.service dhcpcd.service
+
+[Service]
+User=root
+Type=oneshot
+ExecStart=sudo systemctl restart hostapd.service
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable hotspot.service
+
+echo "============================"
 echo " Restarting services to apply changes"
 echo "============================"
+systemctl enable dhcpcd
+systemctl enable dnsmasq
+systemctl enable hostapd
 systemctl restart dhcpcd
 systemctl restart dnsmasq
 systemctl restart hostapd
